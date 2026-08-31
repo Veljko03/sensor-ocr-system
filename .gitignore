@@ -1,0 +1,5 @@
+pictures/
+pictures/
+__pycache__/
+*.pyc
+merenja.db
