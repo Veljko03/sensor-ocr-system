@@ -28,6 +28,9 @@ class FrameConfirmation:
         self.max_age=max_age;self.replay_window=replay_window
         self._chain={};self._latest={};self._seen={};self._lock=threading.Lock()
 
+    def invalidate(self,device):
+        with self._lock:self._chain.pop(device,None)
+
     def observe(self, device, value, frame_sha256, sequence, received_at, now):
         with self._lock:
             if device not in self.devices:return Decision(False,None,0,'unsupported_device')

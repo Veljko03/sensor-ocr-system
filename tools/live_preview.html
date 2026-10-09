@@ -1,0 +1,35 @@
+<!doctype html>
+<html lang="sr"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>OCR uživo</title>
+<style>body{font:17px system-ui,sans-serif;background:#101820;color:#eef5fa;max-width:1000px;margin:30px auto;padding:0 18px}h1{font-size:26px}header{display:flex;justify-content:space-between;align-items:center;gap:15px}.badge{background:#374934;color:#d9efcb;padding:8px 12px;border-radius:8px;font-size:14px}.panel{background:#1b2935;padding:22px;border-radius:14px;margin:18px 0}.value{font-size:64px;font-weight:700;color:#8be0ae}img{max-width:100%;max-height:65vh;display:block;margin:auto;object-fit:contain}p{color:#b5c9d8;line-height:1.5}#status{font-size:20px;color:#e8f0f5}#meta{font-size:14px}.error{color:#ffba9e}</style></head>
+<body><header><h1>OCR uživo</h1><span class="badge">Probni server</span></header>
+<div class="panel"><div class="value" id="value">-</div><p id="status">Čekam sliku sa ESP kamere…</p><div id="meta"></div></div>
+<div class="panel"><img id="photo" alt="Poslednja fotografija sa ESP kamere" hidden><p id="empty">Uključi ESP kameru. Nova slika će se automatski prikazati.</p></div>
+<p>Pomeri kameru i prati sliku i očitavanje. Vrednost se prikazuje posle dve nove slike sa istim očitavanjem. Ako slika nije pouzdano očitana, prikazuje se „-“. Probna očitavanja se ne upisuju u postojeću bazu.</p>
+<script>
+const $=id=>document.getElementById(id);
+const messages={waiting_new_frame:'Kamera nije poslala novu sliku. Proveri da je uključena.',waiting:'Čekam sliku sa ESP kamere…',processing:'Čitam novu sliku…',confirmed:'Očitavanje potvrđeno',awaiting_confirmation:'Čekam sledeću novu sliku za potvrdu…',duplicate_frame:'Stigla je ista slika. Čekam novu sliku…',ocr_rejected:'Displej nije pouzdano očitan',stale_processing:'Obrada je kasnila. Čekam novu sliku…',frames_too_close:'Slike su stigle prebrzo za potvrdu',invalid_value:'Očitavanje nije validno',invalid_image:'Primljena slika nije ispravna',out_of_order:'Čekam novu sliku…'};
+let displayedFrame=0,busy=false;
+async function refresh(){
+ if(busy)return;busy=true;
+ try{
+  const response=await fetch('/api/live',{cache:'no-store'});if(!response.ok)throw Error();
+  const state=await response.json();
+  if(state.frame!==displayedFrame&&state.frame>0){
+   $('value').textContent='-';
+   const imageResponse=await fetch('/frame.jpg?frame='+state.frame,{cache:'no-store'});
+   if(imageResponse.status===409)return;if(!imageResponse.ok)throw Error();
+   const blob=await imageResponse.blob(),url=URL.createObjectURL(blob),picture=new Image();
+   try{picture.src=url;await picture.decode();
+    const prior=$('photo').dataset.url;$('photo').src=url;$('photo').dataset.url=url;
+    $('photo').hidden=false;$('empty').hidden=true;displayedFrame=state.frame;
+    if(prior)URL.revokeObjectURL(prior);
+   }catch(error){URL.revokeObjectURL(url);throw error;}
+  }
+  $('value').textContent=state.value===null?'-':Number(state.value).toFixed(2);
+  $('status').textContent=messages[state.status]||'Čekam novu sliku…';$('status').className='';
+  $('meta').textContent=state.frame?`Slika ${state.frame} · ${new Date(state.updated_at*1000).toLocaleTimeString('sr-RS')}${state.latency_ms===null?'':` · Obrada ${state.latency_ms} ms`}`:'';
+ }catch(error){$('value').textContent='-';$('status').textContent='Veza sa probnim serverom je prekinuta. Pokreni ga ponovo ako je RPi restartovan.';$('status').className='error';}
+ finally{busy=false;}
+}
+refresh();setInterval(refresh,1000);
+</script></body></html>

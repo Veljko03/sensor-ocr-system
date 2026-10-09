@@ -11,6 +11,7 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 import json
 from pathlib import Path
 import threading
+import time
 from urllib.parse import urlsplit,parse_qs
 from image_ingest import identify_device,replace_latest
 from tools.dataset_store import MAX_IMAGE_BYTES
@@ -36,10 +37,12 @@ def parse_upload(content_type,body,explicit=None):
 
 class Receiver(ThreadingHTTPServer):
     daemon_threads=True
-    def __init__(self,address,root):
+    def __init__(self,address,root,handler=None,on_frame=None,on_rejected=None):
         self.root=Path(root).resolve();self.root.mkdir(parents=True,exist_ok=True,mode=0o700)
         self.write_lock=threading.Lock();self.last=None;self.received=0
-        super().__init__(address,Handler)
+        self.on_frame=on_frame
+        self.on_rejected=on_rejected
+        super().__init__(address,handler or Handler)
 
 
 class Handler(BaseHTTPRequestHandler):
@@ -56,15 +59,21 @@ class Handler(BaseHTTPRequestHandler):
         if urlsplit(self.path).path!='/health':return self.respond(404,{'error':'Unknown path'})
         self.respond(200,{'mode':'dataset_capture_only','received':self.server.received,'production_db_used':False})
 
+    def reject_upload(self,status,message):
+        if self.server.on_rejected is not None:
+            with self.server.write_lock:self.server.on_rejected()
+        self.respond(status,{'error':message})
+
     def do_POST(self):
+        received_at=time.monotonic()
         parsed=urlsplit(self.path)
         if parsed.path!='/upload':return self.respond(404,{'error':'Unknown path'})
         if self.headers.get('Transfer-Encoding'):
-            self.close_connection=True;return self.respond(400,{'error':'Content-Length required'})
+            self.close_connection=True;return self.reject_upload(400,'Content-Length required')
         try:size=int(self.headers.get('Content-Length','0'))
         except ValueError:size=0
         if not 0<size<=MAX_BODY:
-            self.close_connection=True;return self.respond(413,{'error':'Invalid or excessive body size'})
+            self.close_connection=True;return self.reject_upload(413,'Invalid or excessive body size')
         try:
             body=self.rfile.read(size)
             if len(body)!=size:raise ValueError('Incomplete upload body')
@@ -74,9 +83,11 @@ class Handler(BaseHTTPRequestHandler):
             with self.server.write_lock:
                 latest=replace_latest(self.server.root,device,data)
                 self.server.last=latest;self.server.received+=1
-            self.respond(200,{'status':'primljeno_za_dataset','esp_id':device,'slika':latest.name,'ocitano':None})
-        except (ValueError,TypeError):self.respond(400,{'error':'Invalid esp_1 JPEG upload'})
-        except OSError:self.respond(503,{'error':'Image storage unavailable'})
+                if self.server.on_frame is not None:
+                    self.server.on_frame(data,self.server.received,received_at)
+            self.respond(200,{'status':getattr(self,'upload_status','primljeno_za_dataset'),'esp_id':device,'slika':latest.name,'ocitano':None})
+        except (ValueError,TypeError):self.reject_upload(400,'Invalid esp_1 JPEG upload')
+        except OSError:self.reject_upload(503,'Image storage unavailable')
 
 
 def main():

@@ -8,7 +8,19 @@ This is an isolated engineering workspace, not a new production deployment. `mai
 
 The original project remains in `~/sensor-ocr-system`. Development is in `~/sensor-ocr-dev`. Private datasets live in `~/sensor-ocr-data/robustness-v1`, outside Git. Nothing here should modify production `merenja.db` during research.
 
-46 automated tests now cover labeling/capture, OCR structure, ordered frame confirmation, bounded JPEG ingestion, atomic latest-image replacement and a dataset-only HTTP receiver. The new confirmation and ingestion modules are development primitives; production main.py still uses its preserved legacy implementation. During controlled collection the temporary receiver can use port 5000 only while the normal app is off; it does not run OCR or write measurement history. Stop that receiver before starting the normal application on the same port.
+52 automated tests cover labeling/capture, OCR structure, ordered frame confirmation, bounded JPEG ingestion, atomic latest-image replacement, the dataset-only HTTP receiver and the live OCR preview. Production main.py still uses its preserved legacy implementation. The temporary receiver and preview can use port 5000 only while the normal app is off; neither writes production measurement history. Stop the running temporary server before starting another application on the same port.
+
+## Simple live OCR test
+
+Run one command on the Raspberry Pi:
+
+```bash
+bash ~/sensor-ocr-dev/start_preview.sh
+```
+
+Open `http://10.128.188.54:5000/` on the same network and switch on the existing ESP camera. The page automatically displays the current original photograph and candidate OCR value. Two distinct frames with the same valid reading confirm the number, including `0.00`. Rejected, malformed, duplicate or unconfirmed frames show `-`; after 15 seconds without a new frame the value also disappears. This does not collect a new dataset or modify the production SQLite database. The process stops with Ctrl+C and must be started again after a reboot. No SSH tunnel or labeling page is needed for this preview.
+
+The preview was checked with 52 passing tests and actual candidate OCR on reviewed historical photographs: two frames confirmed `0.00` and `1.61`; a subsequent negative photograph cleared each value. These integration checks are not independent accuracy validation. The existing private dataset currently has 250 images, with 234 labeled and 16 newly captured images pending human labels.
 
 ## Current application and OCR
 
