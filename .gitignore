@@ -1,5 +1,26 @@
-pictures/
-pictures/
+# Private/runtime data stays outside the repository whenever possible.
+env/
+.venv/
+venv/
 __pycache__/
-*.pyc
-merenja.db
+*.py[cod]
+.pytest_cache/
+*.db
+*.db-*
+*.sqlite3
+*.sqlite3-*
+*.log
+run/
+pictures/
+dataset/
+data/
+exports/
+benchmark-results/
+.env
+.env.*
+!.env.example
+*.pem
+*.key
+id_rsa*
+id_ed25519*
+# Human datasets and photos must receive a privacy review before publishing.
