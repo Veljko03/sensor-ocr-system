@@ -1,0 +1,146 @@
+{
+  "status": "development_only_not_independent_test",
+  "dataset_version": "0cb495c0931b672bcab0a7a8e57a0cd23d9f7bec7f242a031d21cfdbc4c952ad",
+  "reports": [
+    {
+      "kind": "baseline",
+      "split": "development",
+      "dataset_version": "0cb495c0931b672bcab0a7a8e57a0cd23d9f7bec7f242a031d21cfdbc4c952ad",
+      "ocr_sha256": "2ef85ada4fe345a87cb62e64ca63f4c2c9aa9f9c71b92527a18642d9c3d052cb",
+      "configuration": {},
+      "metrics": {
+        "readable": 34,
+        "unreadable": 0,
+        "no_display": 0,
+        "unreadable_or_absent_unspecified": 89,
+        "correctly_accepted": 27,
+        "incorrectly_accepted": 16,
+        "rejected_readable": 0,
+        "correct_acceptance_rate": 0.7941176470588235,
+        "false_acceptance_rate_negative": 0.10112359550561797,
+        "false_acceptance_rate_no_display": null,
+        "false_acceptance_rate_unreadable": null,
+        "numerical_error_rate_among_accepted": 0.37209302325581395,
+        "digit_accuracy_readable_frames_rejections_count_as_incorrect": 0.8333333333333334,
+        "full_reading_exact_match_rate": 0.7941176470588235
+      },
+      "latency_seconds": {
+        "mean": 0.1741326628373908,
+        "p95": 0.2406212289999985,
+        "max": 0.2573335889999271
+      },
+      "cpu_seconds": 23.200633999999997,
+      "peak_process_rss_kib": 59584,
+      "opencv_threads": 1
+    },
+    {
+      "kind": "candidate",
+      "split": "development",
+      "dataset_version": "0cb495c0931b672bcab0a7a8e57a0cd23d9f7bec7f242a031d21cfdbc4c952ad",
+      "ocr_sha256": "eb39db6f554d90c55d73fd24e8d9e04115397bc38e4104949fbe8850db811010",
+      "configuration": {
+        "mode": "dynamic",
+        "baseline_sha256": "2ef85ada4fe345a87cb62e64ca63f4c2c9aa9f9c71b92527a18642d9c3d052cb",
+        "algorithm": "quad-dynamic-v6"
+      },
+      "metrics": {
+        "readable": 34,
+        "unreadable": 0,
+        "no_display": 0,
+        "unreadable_or_absent_unspecified": 89,
+        "correctly_accepted": 34,
+        "incorrectly_accepted": 0,
+        "rejected_readable": 0,
+        "correct_acceptance_rate": 1.0,
+        "false_acceptance_rate_negative": 0.0,
+        "false_acceptance_rate_no_display": null,
+        "false_acceptance_rate_unreadable": null,
+        "numerical_error_rate_among_accepted": 0.0,
+        "digit_accuracy_readable_frames_rejections_count_as_incorrect": 1.0,
+        "full_reading_exact_match_rate": 1.0
+      },
+      "latency_seconds": {
+        "mean": 0.21604082260161178,
+        "p95": 0.34068793699998423,
+        "max": 0.354665950000026
+      },
+      "cpu_seconds": 28.355813,
+      "peak_process_rss_kib": 63096,
+      "opencv_threads": 1
+    },
+    {
+      "kind": "baseline",
+      "split": "legacy",
+      "dataset_version": "0cb495c0931b672bcab0a7a8e57a0cd23d9f7bec7f242a031d21cfdbc4c952ad",
+      "ocr_sha256": "2ef85ada4fe345a87cb62e64ca63f4c2c9aa9f9c71b92527a18642d9c3d052cb",
+      "configuration": {},
+      "metrics": {
+        "readable": 39,
+        "unreadable": 0,
+        "no_display": 0,
+        "unreadable_or_absent_unspecified": 72,
+        "correctly_accepted": 38,
+        "incorrectly_accepted": 0,
+        "rejected_readable": 1,
+        "correct_acceptance_rate": 0.9743589743589743,
+        "false_acceptance_rate_negative": 0.0,
+        "false_acceptance_rate_no_display": null,
+        "false_acceptance_rate_unreadable": null,
+        "numerical_error_rate_among_accepted": 0.0,
+        "digit_accuracy_readable_frames_rejections_count_as_incorrect": 0.9743589743589743,
+        "full_reading_exact_match_rate": 0.9743589743589743
+      },
+      "latency_seconds": {
+        "mean": 0.17194297658558572,
+        "p95": 0.23972599600006106,
+        "max": 0.24082568700009688
+      },
+      "cpu_seconds": 20.666286,
+      "peak_process_rss_kib": 59620,
+      "opencv_threads": 1
+    },
+    {
+      "kind": "candidate",
+      "split": "legacy",
+      "dataset_version": "0cb495c0931b672bcab0a7a8e57a0cd23d9f7bec7f242a031d21cfdbc4c952ad",
+      "ocr_sha256": "eb39db6f554d90c55d73fd24e8d9e04115397bc38e4104949fbe8850db811010",
+      "configuration": {
+        "mode": "dynamic",
+        "baseline_sha256": "2ef85ada4fe345a87cb62e64ca63f4c2c9aa9f9c71b92527a18642d9c3d052cb",
+        "algorithm": "quad-dynamic-v6"
+      },
+      "metrics": {
+        "readable": 39,
+        "unreadable": 0,
+        "no_display": 0,
+        "unreadable_or_absent_unspecified": 72,
+        "correctly_accepted": 39,
+        "incorrectly_accepted": 0,
+        "rejected_readable": 0,
+        "correct_acceptance_rate": 1.0,
+        "false_acceptance_rate_negative": 0.0,
+        "false_acceptance_rate_no_display": null,
+        "false_acceptance_rate_unreadable": null,
+        "numerical_error_rate_among_accepted": 0.0,
+        "digit_accuracy_readable_frames_rejections_count_as_incorrect": 1.0,
+        "full_reading_exact_match_rate": 1.0
+      },
+      "latency_seconds": {
+        "mean": 0.19827096954055082,
+        "p95": 0.3331682909999927,
+        "max": 0.3385251690001496
+      },
+      "cpu_seconds": 23.595215000000003,
+      "peak_process_rss_kib": 61864,
+      "opencv_threads": 1
+    }
+  ],
+  "limitations": [
+    "Frame metrics do not establish temporal correctness.",
+    "Confidence is heuristic, not a calibrated probability.",
+    "Independence requires meaningful capture groups; a partition name alone is insufficient.",
+    "Unknown conditions do not establish angle/distance/lighting coverage.",
+    "A finite test does not guarantee zero future false positives."
+  ],
+  "tests": 46
+}

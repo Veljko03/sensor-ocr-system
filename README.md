@@ -4,9 +4,11 @@ ESP32 camera devices upload JPEG photographs to FastAPI `POST /upload`. The dash
 
 ## Status of this development branch
 
-This is an isolated engineering workspace, not a new production deployment. `main.py` and `real_meter_ocr.py` preserve the current Raspberry Pi application as checkpoint commit `24cf496`. No OCR thresholds have been lowered. New tools provide controlled collection, human labeling, manifest validation, and reproducible frame-level evaluation. Independent new data and OCR improvements are still pending human labels/hardware collection. Do not claim the historical dataset demonstrates robustness to new angles or distances.
+This is an isolated engineering workspace, not a new production deployment. `main.py` and `real_meter_ocr.py` preserve the current Raspberry Pi application as checkpoint commit `24cf496`. The separate `ocr_candidate.py` correctly reads 73/73 readable photographs and rejects all 161 negatives in the fully human-reviewed development/regression dataset. The baseline reads 65/73 correctly and accepts 16 wrong values on the same reviewed labels. Independent validation/test captures remain necessary; these development results do not establish robustness across camera angles or distances. See [research evidence and remaining gates](docs/OCR_RESEARCH.md).
 
 The original project remains in `~/sensor-ocr-system`. Development is in `~/sensor-ocr-dev`. Private datasets live in `~/sensor-ocr-data/robustness-v1`, outside Git. Nothing here should modify production `merenja.db` during research.
+
+46 automated tests now cover labeling/capture, OCR structure, ordered frame confirmation, bounded JPEG ingestion, atomic latest-image replacement and a dataset-only HTTP receiver. The new confirmation and ingestion modules are development primitives; production main.py still uses its preserved legacy implementation. During controlled collection the temporary receiver can use port 5000 only while the normal app is off; it does not run OCR or write measurement history. Stop that receiver before starting the normal application on the same port.
 
 ## Current application and OCR
 
