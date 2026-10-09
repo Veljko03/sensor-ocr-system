@@ -117,14 +117,16 @@ class DatasetTests(unittest.TestCase):
             writer.writerows(r[:4] for r in rows)
         original=manifest.read_bytes()
         (pictures/'20261007_134003_esp_1.jpg').write_bytes(jpeg('green'))
+        archived=project/'dataset/real_meter/debug_test';archived.mkdir()
+        (archived/'original.jpg').write_bytes(jpeg('yellow'))
         result=import_legacy(self.store,project)
-        self.assertEqual(result['historical_labeled'],2);self.assertEqual(result['historical_unlabeled'],1)
+        self.assertEqual(result['historical_labeled'],2);self.assertEqual(result['historical_unlabeled'],2)
         record=next(r for r in self.store.rows() if r['class']=='readable')
         self.store.label(record['id'],'readable','6.62',revision=1)
         import_legacy(self.store,project)
         self.assertEqual(manifest.read_bytes(),original)
         self.assertEqual(next(r for r in self.store.rows() if r['id']==record['id'])['value'],'6.62')
-        self.assertEqual(self.store.summary()['total'],3)
+        self.assertEqual(self.store.summary()['total'],4)
 
     def test_watcher_requires_start_and_new_frame_and_stops_at_limit(self):
         source=self.root/'latest.jpg';source.write_bytes(jpeg('blue'))
@@ -149,6 +151,14 @@ class DatasetTests(unittest.TestCase):
         self.assertEqual(report['correctly_accepted'],1)
         self.assertEqual(report['false_acceptance_rate_no_display'],1)
         self.assertEqual(report['correct_acceptance_rate'],.5)
+
+    def test_simple_unreadable_does_not_invent_display_presence(self):
+        report=summarize([{'class':'unreadable_or_absent','value':None,'prediction':'0.00'}])
+        self.assertEqual(report['unreadable'],0)
+        self.assertEqual(report['no_display'],0)
+        self.assertEqual(report['unreadable_or_absent_unspecified'],1)
+        self.assertEqual(report['incorrectly_accepted'],1)
+        self.assertEqual(report['false_acceptance_rate_negative'],1)
 
 
 class HttpTests(unittest.TestCase):
@@ -180,6 +190,13 @@ class HttpTests(unittest.TestCase):
             self.request('/api/label',{'id':self.image,'class':'readable','value':'9.99','revision':1})
         self.assertEqual(error.exception.code,409)
 
+    def test_simple_ui_annotations_record_human_origin(self):
+        self.request('/api/label',{'id':self.image,'class':'unreadable','simple':True,
+            'note':'display_presence=unspecified'}).close()
+        row=self.store.rows()[0]
+        self.assertEqual(row['label_origin'],'human_simple')
+        self.assertIsNone(row['value'])
+
     def test_no_token_cross_origin_and_invalid_host_refused(self):
         for kwargs in [{'token':False},{'headers':{'Origin':'http://example.com'}},{'headers':{'Host':'example.com'}}]:
             with self.assertRaises(HTTPError) as error:
@@ -195,7 +212,8 @@ class HttpTests(unittest.TestCase):
         self.assertIsNone(self.store.rows()[0]['class'])
 
     def test_page_images_counts_export_and_loopback(self):
-        with self.request('/') as response:self.assertIn(b'Alt +',response.read())
+        with self.request('/') as response:self.assertIn(b'Neozna',response.read())
+        with self.request('/capture') as response:self.assertIn(b'limit',response.read())
         with self.request('/image/'+self.image) as response:self.assertEqual(response.read(),jpeg('blue'))
         with self.request('/api/status') as response:self.assertEqual(json.load(response)['dataset']['total'],1)
         with self.request('/export.csv') as response:self.assertIn(b'group_id',response.read())

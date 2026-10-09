@@ -16,7 +16,8 @@ def summarize(rows):
     positive=[r for r in rows if r['class']=='readable']
     absent=[r for r in rows if r['class']=='absent']
     unreadable=[r for r in rows if r['class']=='unreadable']
-    negative=absent+unreadable
+    ambiguous=[r for r in rows if r['class']=='unreadable_or_absent']
+    negative=absent+unreadable+ambiguous
     accepted=[r for r in rows if r['prediction'] is not None]
     wrong=[r for r in accepted if r['class']!='readable' or r['prediction']!=r['value']]
     correct=[r for r in positive if r['prediction']==r['value']]
@@ -29,6 +30,7 @@ def summarize(rows):
     def ratio(n,d):
         return n/d if d else None
     return {'readable':len(positive),'unreadable':len(unreadable),'no_display':len(absent),
+        'unreadable_or_absent_unspecified':len(ambiguous),
         'correctly_accepted':len(correct),'incorrectly_accepted':len(wrong),
         'rejected_readable':sum(r['prediction'] is None for r in positive),
         'correct_acceptance_rate':ratio(len(correct),len(positive)),
@@ -104,6 +106,8 @@ def main():
             row['value']=normalize_value(row['value'])
         elif row.get('value'):
             raise ValueError('Negative image has a numerical label')
+        if row['class']=='unreadable' and row.get('label_origin')=='human_simple':
+            row['class']='unreadable_or_absent'
     import cv2
     cv2.setNumThreads(1)
     spec=importlib.util.spec_from_file_location('candidate_ocr',args.ocr)

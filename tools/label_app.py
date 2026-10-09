@@ -18,6 +18,7 @@ class Server(ThreadingHTTPServer):
         self.store, self.capture = store, capture
         self.token = secrets.token_urlsafe(32)
         self.page = (Path(__file__).parent / 'label_ui.html').read_bytes()
+        self.capture_page = (Path(__file__).parent / 'capture_ui.html').read_bytes()
         super().__init__(address, Handler)
 
 
@@ -47,7 +48,9 @@ class Handler(BaseHTTPRequestHandler):
         path = urlparse(self.path).path
         try:
             if path == '/':
-                self.send(self.server.page, content_type='text/html; charset=utf-8')
+                self.send((Path(__file__).parent/'label_ui.html').read_bytes(), content_type='text/html; charset=utf-8')
+            elif path == '/capture':
+                self.send((Path(__file__).parent/'capture_ui.html').read_bytes(), content_type='text/html; charset=utf-8')
             elif path == '/api/status':
                 self.send({'dataset':self.server.store.summary(), 'capture':self.server.capture.status(),
                            'csrf':self.server.token, 'schema_version':1})
@@ -84,7 +87,8 @@ class Handler(BaseHTTPRequestHandler):
                 raise ValueError('Expected JSON object')
             if self.path == '/api/label':
                 self.server.store.label(data['id'],data['class'],data.get('value',''),
-                                        data.get('note',''),data.get('revision',0))
+                                        data.get('note',''),data.get('revision',0),
+                                        origin='human_simple' if data.get('simple') is True else 'human')
                 self.send({'saved':True})
             elif self.path == '/api/capture/start':
                 allowed={'group_id','split','scenario','angle','distance','lighting','max_images','max_bytes'}

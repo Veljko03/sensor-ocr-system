@@ -268,4 +268,15 @@ def import_legacy(store, project):
         _, created = store.ingest(data, session_id, 'esp_1', path.name, path.stat().st_mtime_ns,
                                   max_images=5000, max_bytes=256*1024**2)
         imported['historical_unlabeled'] += int(created)
+    # Preserve full originals saved inside experiment folders, without masks/crops.
+    for path in sorted((project/'dataset/real_meter').rglob('original.jpg')):
+        session_id='recovered_historical_original'
+        with store.connect() as conn:
+            exists=conn.execute('SELECT id FROM sessions WHERE id=?',(session_id,)).fetchone()
+        if not exists:
+            store.create_session(session_id,group_id='historical_unclassified_20261007',
+                                 split='development',scenario='recovered_original')
+        _,created=store.ingest(path.read_bytes(),session_id,'esp_1',str(path.relative_to(project)),
+                              path.stat().st_mtime_ns,max_images=5000,max_bytes=256*1024**2)
+        imported['historical_unlabeled']+=int(created)
     return imported

@@ -2,7 +2,7 @@
 
 ## Existing data
 
-The new private store is `~/sensor-ocr-data/robustness-v1`. Historical import copies 111 original labeled photographs and their human CSV labels, then copies 122 remaining unique historical originals as **unlabeled**. It does not classify the remaining photographs from logs or OCR predictions. Repeated import is idempotent and does not overwrite human corrections. Original datasets and `pictures` files stay unchanged.
+The new private store is `~/sensor-ocr-data/robustness-v1`. Historical import copies 111 original labeled photographs and their human CSV labels, then copies 123 remaining unique historical originals (including the full original recovered from an experiment folder) as **unlabeled**. It does not classify the remaining photographs from logs or OCR predictions. Repeated import is idempotent and does not overwrite human corrections. Original datasets and `pictures` files stay unchanged.
 
 Images have collision-resistant UUID filenames, SHA-256 content identities, device IDs, session/group IDs, partition, scenario, angle, distance, lighting, source filename and source filesystem timestamp. `captured_utc` is the time the collector/importer recorded the snapshot, not a verified camera exposure timestamp. Historical original filenames preserve their original date/time strings; their timezone is not inferred. Imported historical sessions have unknown camera conditions, and cannot establish coverage for new viewing angles/distances.
 
@@ -10,18 +10,15 @@ The manifest SQLite database is separate from production `merenja.db`. Annotatio
 
 ## Labeling controls
 
-- Enter the value actually visible, for example `6.62` or `662`; save with the green button or Alt+Enter.
-- Use **Displej pokazuje 0.00** / Alt+0 only when the original actually shows 000.
-- Use **Displej prisutan, nečitljiv** / Alt+U when the Festo screen exists but you cannot reliably read every digit.
-- Use **Nema Festo displeja** / Alt+N for ceilings, walls, unrelated blue objects and other scenes without the real Festo display.
-- Use **Preskoči / za kasnije** / Alt+S when a photograph needs another review.
-- Navigate with Previous/Next or Alt+Left/Right. Change the filter to all photographs to revisit and edit a completed label. Existing notes/value are displayed.
-- Use the zoom slider and scroll inside the image area. Full originals are served; the labeler does not crop them for annotation.
-- Counts update after saves and every five seconds. Each successful save commits immediately. CSV export is available from the top link. Do not rely on an unsaved typed value.
+The default view shows every original, including the preserved historical labels. There are two labeling actions: enter a value (6.62 or 662, including 0.00 or 000) and press Save/Enter, or press Unreadable. Saving advances to the next photograph. Previous/Next navigate without changing a label. Zoom enlarges the full original. Select the unfinished filter when revisiting only pending work. Progress is committed immediately and resumed after restart.
+
+The simple Unreadable action records a non-numeric negative with human_simple origin and unspecified display presence. It does not assert whether a Festo display is present. Evaluation reports these separately as unreadable_or_absent; they cannot be presented as verified no-display hard negatives. Existing absent/unreadable distinctions in historical and previously entered labels remain preserved. Any final no-display benchmark still needs human-verified presence labels.
+
+Capture controls are on the separate /capture page, reached through the small collection link. The label screen stays focused on the photograph and two actions. CSV export remains available. Recorded timestamps refer to collection/import time; original filenames retain the historical capture strings.
 
 ## New controlled collection
 
-Capture is **off on every startup**. Expand the collection panel and enter a scenario, angle, distance and lighting. A group is a meaningful shared recording/scene that must remain in one data partition. Leaving the group blank assigns a new capture-session group. Reusing a group in a different partition is rejected. Use the same group for closely related repeated scenes rather than splitting almost identical frames between development and test.
+Capture is **off on every startup**. Open the separate collection page and enter a scenario, angle, distance and lighting. A group is a meaningful shared recording/scene that must remain in one data partition. Leaving the group blank assigns a new capture-session group. Reusing a group in a different partition is rejected. Use the same group for closely related repeated scenes rather than splitting almost identical frames between development and test.
 
 Specify the maximum number of new unique pictures for that session (default 200) and total dataset disk budget (default 64 MiB, includes imported data and SQLite). The tool also reserves at least 64 MiB free disk. It stops when the count/quota limit is reached or storage fails. Limits are per session for image count and per dataset for bytes, not a promise to limit all system storage. No production or labeled files are automatically deleted.
 
