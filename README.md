@@ -18,7 +18,7 @@ Run one command on the Raspberry Pi:
 bash ~/sensor-ocr-dev/start_preview.sh
 ```
 
-Open `http://10.128.188.54:5000/` on the same network and switch on the existing ESP camera. The page automatically displays the current original photograph and candidate OCR value. Two distinct frames with the same valid reading confirm the number, including `0.00`. Rejected, malformed, duplicate or unconfirmed frames show `-`; after 15 seconds without a new frame the value also disappears. This does not collect a new dataset or modify the production SQLite database. The process stops with Ctrl+C and must be started again after a reboot. No SSH tunnel or labeling page is needed for this preview.
+Open `http://RPI_IP:5000/` on the same network, replacing `RPI_IP` with the address returned by `hostname -I`, and switch on the existing ESP camera. The page automatically displays the current original photograph and candidate OCR value. Two distinct frames with the same valid reading confirm the number, including `0.00`. Rejected, malformed, duplicate or unconfirmed frames show `-`; after 15 seconds without a new frame the value also disappears. This does not collect a new dataset or modify the production SQLite database. The process stops with Ctrl+C and must be started again after a reboot. No SSH tunnel or labeling page is needed for this preview.
 
 The preview was checked with 52 passing tests and actual candidate OCR on reviewed historical photographs: two frames confirmed `0.00` and `1.61`; a subsequent negative photograph cleared each value. These integration checks are not independent accuracy validation. The existing private dataset currently has 250 images, with 234 labeled and 16 newly captured images pending human labels.
 
@@ -59,7 +59,7 @@ cd ~/sensor-ocr-dev
 Open an SSH tunnel on the Windows laptop (replace `RPI_HOST` with the actual SSH hostname/IP):
 
 ```powershell
-ssh -N -L 127.0.0.1:8801:127.0.0.1:8001 veljko03@RPI_HOST
+ssh -N -L 127.0.0.1:8801:127.0.0.1:8001 RPI_USER@RPI_HOST
 ```
 
 Browse `http://127.0.0.1:8801`. Use the existing configured SSH key or agent. Never publish the labeler on `0.0.0.0`. Ground truth comes only from human entry; OCR predictions are not written as labels.
@@ -99,4 +99,4 @@ If capture remains at zero: confirm that the production server is running, ESP u
 
 The recovery checkpoint is in `~/sensor-ocr-recovery/20261009T121834Z`: source/dataset archive, Git bundle, original hashes and uncommitted main patch. The archive excludes the production DB and runtime images; those remain untouched in the original project. Git history remains intact. The first development commit preserves current main/OCR. A rollback of later development code can use a new worktree at `24cf496`; never reset the active dirty production worktree or rewrite shared history. Deployment/rollback of a running service requires a reviewed plan and explicit approval.
 
-No cleanup, force-push, merge into main or replacement of the live application has occurred. Valuable historical scripts, experiments and photos remain preserved. Repository cleanup requires an explicit manifest and approval. Final push is pending independent-data validation, cleanup approval, and security review; dataset photographs must be reviewed for private content before any public publication.
+This development release preserves Git history and keeps useful historical scripts and experiments. No files were permanently removed, so destructive cleanup approval is not required for publishing this branch. Photographs, ground-truth databases, logs, environments and credentials are excluded from new commits. The release checks are recorded in [the release report](docs/RELEASE_CHECKS.md). Main-branch integration and replacement of the production application remain pending independent-data validation and deployment review.

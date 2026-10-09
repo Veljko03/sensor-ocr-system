@@ -8,7 +8,7 @@ not passed an independent held-out acceptance test and must not be deployed yet.
 234 photographs are fully reviewed: 73 readable, including 33 real 0.00 labels,
 and 161 images marked unreadable without a separate display-presence assertion.
 One label, `20261007_135221_esp_1.jpg`, was explicitly corrected by the human to
-0.00 after a visual review in chat. The prior SQLite checkpoint and frozen CSV
+0.00 after a visual review by the operator. The prior SQLite checkpoint and frozen CSV
 remain available privately. No OCR prediction became a label automatically.
 
 Dataset SHA-256: `0cb495c0931b672bcab0a7a8e57a0cd23d9f7bec7f242a031d21cfdbc4c952ad`.
@@ -123,6 +123,7 @@ Negative labels need an explicit human display-presence review before reporting
 no-display false acceptance separately. Do not tune on final test results.
 
 Production integration, dashboard/temporary database verification, deployment
-and rollback review, cleanup manifest approval, security checks and final
-non-force GitHub push remain pending. No finite test guarantees future zero
-false positives.
+and rollback review remain pending. The tested standalone preview and research
+tools are delivered on a separate development branch; see `RELEASE_CHECKS.md`.
+Useful experiments are retained, and no permanent cleanup was performed.
+No finite test guarantees future zero false positives.
