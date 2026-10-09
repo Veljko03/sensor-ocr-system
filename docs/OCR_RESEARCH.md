@@ -1,7 +1,8 @@
 # OCR research checkpoint — 9 October 2026
 
-This branch preserves production main/OCR and adds an isolated candidate. It has
-not passed an independent held-out acceptance test and must not be deployed yet.
+This research checkpoint preserved the previous main/OCR and developed an isolated
+candidate. The later operator-requested main-server integration is documented in
+`MAIN_SERVER.md`. Independent held-out accuracy acceptance remains outstanding.
 
 ## Human ground truth and reproducible comparison
 

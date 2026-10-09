@@ -1,5 +1,5 @@
 from fastapi import FastAPI, HTTPException, UploadFile, File
-from fastapi.responses import HTMLResponse
+from fastapi.responses import HTMLResponse, Response
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 from typing import Dict, List, Optional, Tuple
@@ -10,11 +10,19 @@ import re
 import shutil
 import sqlite3
 import subprocess
+import asyncio
+import time
+import logging
 from collections import Counter
+from contextlib import AsyncExitStack
 
 import cv2
 import numpy as np
 import pytesseract
+from frame_confirmation import FrameConfirmation
+from image_ingest import identify_device, read_bounded_upload, replace_latest
+from upload_limits import UploadBodyLimit
+import ocr_candidate
 
 
 # ============================================================
@@ -23,11 +31,15 @@ import pytesseract
 
 app = FastAPI(title="Festo / Strujomer OCR server")
 
-SERVER_VERSION = "festo-blue-v3.2-direct7seg"
+SERVER_VERSION = "festo-structural-v4"
 
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
-UPLOAD_FOLDER = os.path.join(BASE_DIR, "pictures")
-DB_PATH = os.path.join(BASE_DIR, "merenja.db")
+DATA_DIR = os.path.abspath(os.environ.get("SENSOR_OCR_DATA_DIR", BASE_DIR))
+UPLOAD_FOLDER = os.path.join(DATA_DIR, "pictures")
+DB_PATH = os.path.join(DATA_DIR, "merenja.db")
+cv2.setNumThreads(1)
+if ocr_candidate.MODE != "dynamic":
+    raise RuntimeError("The main server requires the verified dynamic OCR mode")
 
 os.makedirs(UPLOAD_FOLDER, exist_ok=True)
 app.mount("/pictures", StaticFiles(directory=UPLOAD_FOLDER), name="pictures")
@@ -57,7 +69,7 @@ METER_CONFIG = {
 "digit_crop": (0.00, 0.16, 1.00, 0.62),
         "decimal_digits": 2,
         "min_value": 0.0,
-        "max_value": 200.0,
+        "max_value": 9.99,
 
         # Nemoj previsoko za ESP32 kameru.
         "min_sharpness": 1.0,
@@ -1091,9 +1103,9 @@ def ocr_reading(image_path: str, esp_id: str) -> Dict:
             "ok": False
         }
 
-    from real_meter_ocr import read_real_meter_image
-
-    image = cv2.imread(image_path)
+    # Decode immutable ingress bytes; old helper callers may still use a path.
+    image = (cv2.imdecode(np.frombuffer(image_path, np.uint8), cv2.IMREAD_COLOR)
+             if isinstance(image_path, bytes) else cv2.imread(image_path))
 
     if image is None:
         return {
@@ -1105,7 +1117,7 @@ def ocr_reading(image_path: str, esp_id: str) -> Dict:
             "ok": False
         }
 
-    value, debug = read_real_meter_image(
+    value, debug = ocr_candidate.read_real_meter_image(
         image,
         confidence_threshold=0.45
     )
@@ -1113,17 +1125,17 @@ def ocr_reading(image_path: str, esp_id: str) -> Dict:
     if value is None:
         return {
             "value": None,
-            "raw": str(debug),
-            "engine": "real_meter_7seg",
+            "raw": str(debug)[:8192],
+            "engine": "structural_7seg",
             "crop_slika": None,
             "processed_slika": None,
             "ok": False
         }
 
     return {
-        "value": round(float(value), 2),
-        "raw": str(debug),
-        "engine": "real_meter_7seg",
+        "value": value,
+        "raw": str(debug)[:8192],
+        "engine": "structural_7seg",
         "crop_slika": None,
         "processed_slika": None,
         "ok": True
@@ -1134,26 +1146,19 @@ def insert_measurement(esp_id: str, sat: str, value: Optional[float],
                        original_slika: Optional[str], crop_slika: Optional[str],
                        processed_slika: Optional[str], ocr_raw: str, ok: bool):
     conn = get_conn()
-    conn.execute(
-        """
-        INSERT INTO merenja
-        (esp_id, sat, vrednost, vreme, original_slika, crop_slika, processed_slika, ocr_raw, ocr_ok)
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
-        """,
-        (
-            esp_id,
-            sat,
-            value,
-            current_time(),
-            original_slika,
-            crop_slika,
-            processed_slika,
-            ocr_raw,
-            1 if ok else 0
+    try:
+        conn.execute(
+            """
+            INSERT INTO merenja
+            (esp_id, sat, vrednost, vreme, original_slika, crop_slika, processed_slika, ocr_raw, ocr_ok)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            (esp_id, sat, value, current_time(), original_slika, crop_slika,
+             processed_slika, ocr_raw, 1 if ok else 0),
         )
-    )
-    conn.commit()
-    conn.close()
+        conn.commit()
+    finally:
+        conn.close()
 
 
 # ============================================================
@@ -1197,8 +1202,8 @@ HTML_STRANICA = """
     </div>
 
     <div class="images">
-        <div class="card"><h3>ESP 1 - crop</h3><img id="img1"><div id="raw1" class="ocr"></div></div>
-        <div class="card"><h3>ESP 2 - crop</h3><img id="img2"><div id="raw2" class="ocr"></div></div>
+        <div class="card"><h3>ESP 1 - originalna slika</h3><img id="img1" alt="Poslednja originalna fotografija sa ESP 1"><div id="raw1" class="ocr"></div></div>
+        <div class="card"><h3>ESP 2 - originalna slika</h3><img id="img2" alt="Poslednja originalna fotografija sa ESP 2"><div id="raw2" class="ocr"></div></div>
     </div>
 
     <div class="chart">
@@ -1208,7 +1213,7 @@ HTML_STRANICA = """
 
 <script>
 const ctx = document.getElementById('chart').getContext('2d');
-const grafikon = new Chart(ctx, {
+const grafikon = typeof Chart === 'undefined' ? null : new Chart(ctx, {
     type: 'line',
     data: {
         labels: [],
@@ -1285,38 +1290,70 @@ function fmtLabel(v) {
     return v;
 }
 
-async function refresh(){
-    const r = await fetch('/api/podaci?t=' + Date.now(), { cache: 'no-store' });
-    const p = await r.json();
-
-    document.getElementById('status').innerText = "Poslednje osvežavanje: " + new Date().toLocaleTimeString();
-    document.getElementById('val-sat_1').innerText = fmt(p.trenutno.sat_1);
-    document.getElementById('val-sat_2').innerText = fmt(p.trenutno.sat_2);
-
-    document.getElementById('time-sat_1').innerText = p.slike.esp_1.vreme ? "Poslednja slika: " + p.slike.esp_1.vreme : "Nema merenja";
-    document.getElementById('time-sat_2').innerText = p.slike.esp_2.vreme ? "Poslednja slika: " + p.slike.esp_2.vreme : "Nema merenja";
-
-   img("img1", p.slike.esp_1.crop_slika || p.slike.esp_1.original_slika);
-   img("img2", p.slike.esp_2.crop_slika || p.slike.esp_2.original_slika);
-
-    // Ne prikazujemo dugačak OCR debug na frontu.
-    document.getElementById('raw1').innerText = "";
-    document.getElementById('raw2').innerText = "";
-
-    const labels = Array.from(new Set([
-    ...p.istorija.sat_1.map(x => x.vreme),
-    ...p.istorija.sat_2.map(x => x.vreme)
-])).sort();
-
-    function valueAt(lista, vreme) {
-        const item = lista.find(x => x.vreme === vreme);
-        return item ? item.vrednost : null;
+const states = {
+    waiting: 'Čekam sliku', waiting_new_frame: 'Čekam novu sliku',
+    processing: 'Čitam novu sliku', confirmed: 'Očitavanje potvrđeno',
+    awaiting_confirmation: 'Čekam sledeću sliku za potvrdu',
+    duplicate_frame: 'Stigla je ista slika; čekam novu',
+    ocr_rejected: 'Displej nije pouzdano očitan', unsupported_device: 'OCR još nije podešen za ovaj uređaj',
+    invalid_image: 'Primljen je neispravan JPEG', invalid_request: 'Upload je odbijen', image_storage_failed: 'Slika nije sačuvana',
+    database_error: 'Merenje nije sačuvano', frames_too_close: 'Slike su stigle prebrzo',
+};
+async function showFrame(device, sat, imageId, rawId, frame, value) {
+    const number = document.getElementById('val-' + sat);
+    const photo = document.getElementById(imageId);
+    number.innerText = '-';
+    document.getElementById(rawId).innerText = states[frame.status] || 'Čekam novu sliku';
+    document.getElementById('time-' + sat).innerText = frame.vreme ? 'Poslednja slika: ' + frame.vreme : 'Nema slike';
+    if (!frame.sequence || !frame.original_slika) {
+        photo.removeAttribute('src');
+        if (photo.dataset.url) URL.revokeObjectURL(photo.dataset.url);
+        delete photo.dataset.url;
+        return;
     }
-
-    grafikon.data.labels = labels.map(fmtLabel);  // prikaz u formatu "22.06 10:30"
-    grafikon.data.datasets[0].data = labels.map(v => valueAt(p.istorija.sat_1, v));
-    grafikon.data.datasets[1].data = labels.map(v => valueAt(p.istorija.sat_2, v));
-    grafikon.update();
+    const response = await fetch('/api/frame/' + device + '?sequence=' + frame.sequence, {cache: 'no-store'});
+    if (response.status === 409) return;
+    if (!response.ok) throw Error('Slika nije dostupna');
+    const url = URL.createObjectURL(await response.blob());
+    const decoded = new Image();
+    try {
+        decoded.src = url;
+        await decoded.decode();
+        const previous = photo.dataset.url;
+        photo.src = url; photo.dataset.url = url;
+        if (previous) URL.revokeObjectURL(previous);
+        number.innerText = fmt(value);
+    } catch (error) { URL.revokeObjectURL(url); throw error; }
+}
+let refreshing = false;
+async function refresh(){
+    if (refreshing) return;
+    refreshing = true;
+    try {
+        const r = await fetch('/api/podaci?t=' + Date.now(), {cache: 'no-store'});
+        if (!r.ok) throw Error('Server nije dostupan');
+        const p = await r.json();
+        await Promise.all([
+            showFrame('esp_1', 'sat_1', 'img1', 'raw1', p.slike.esp_1, p.trenutno.sat_1),
+            showFrame('esp_2', 'sat_2', 'img2', 'raw2', p.slike.esp_2, p.trenutno.sat_2),
+        ]);
+        document.getElementById('status').innerText = 'Poslednje osvežavanje: ' + new Date().toLocaleTimeString();
+        if (grafikon) {
+            const labels = Array.from(new Set([...p.istorija.sat_1.map(x => x.vreme), ...p.istorija.sat_2.map(x => x.vreme)])).sort();
+            function valueAt(lista, vreme) {
+                const item = lista.find(x => x.vreme === vreme);
+                return item ? item.vrednost : null;
+            }
+            grafikon.data.labels = labels.map(fmtLabel);
+            grafikon.data.datasets[0].data = labels.map(v => valueAt(p.istorija.sat_1, v));
+            grafikon.data.datasets[1].data = labels.map(v => valueAt(p.istorija.sat_2, v));
+            grafikon.update();
+        }
+    } catch(error) {
+        document.getElementById('val-sat_1').innerText = '-';
+        document.getElementById('val-sat_2').innerText = '-';
+        document.getElementById('status').innerText = 'Veza sa serverom je prekinuta. Proveri terminal na RPi.';
+    } finally { refreshing = false; }
 }
 async function ocisti(){ if(confirm("Obrisati sva merenja?")) { await fetch('/api/obrisi', {method:'DELETE'}); refresh(); } }
 setInterval(refresh, 3000); refresh();
@@ -1339,140 +1376,112 @@ async def dashboard():
 # OCR FRAME CONFIRMATION
 # ============================================================
 
-OCR_CONFIRMATION_REQUIRED = 2
-OCR_CONFIRMATION_STATE = {}
+OCR_CONFIRMATION = FrameConfirmation()
+UPLOAD_LOCKS = {device: asyncio.Lock() for device in METER_CONFIG}
+UPLOAD_SEQUENCE = {device: 0 for device in METER_CONFIG}
+LIVE_FRAMES = {}
+logger = logging.getLogger(__name__)
 
 
-def confirm_ocr_value(esp_id: str, value):
-    """
-    Vrednost je validna tek kada je ista vrednost procitana
-    u vise uzastopnih frejmova.
+def invalidate_current(device, sequence, reason):
+    OCR_CONFIRMATION.invalidate(device)
+    previous = LIVE_FRAMES.get(device, {})
+    LIVE_FRAMES[device] = dict(previous, sequence=sequence, value=None,
+                               ocr_ok=False, status=reason)
 
-    Svaki OCR reject prekida niz.
-    """
 
-    value = round(float(value), 2)
+async def reject_upload_body(scope):
+    # A rejected multipart body may not identify a trustworthy camera.
+    # Reset active confirmations rather than retaining a valid-looking number.
+    for device in METER_CONFIG:
+        async with UPLOAD_LOCKS[device]:
+            OCR_CONFIRMATION.invalidate(device)
+            if device in LIVE_FRAMES:
+                UPLOAD_SEQUENCE[device] += 1
+                invalidate_current(device, UPLOAD_SEQUENCE[device], "invalid_request")
 
-    previous = OCR_CONFIRMATION_STATE.get(esp_id)
 
-    if (
-        previous is not None
-        and abs(previous["value"] - value) < 0.001
-    ):
-        count = previous["count"] + 1
-    else:
-        count = 1
-
-    OCR_CONFIRMATION_STATE[esp_id] = {
-        "value": value,
-        "count": count
-    }
-
-    return count >= OCR_CONFIRMATION_REQUIRED, count
+app.add_middleware(UploadBodyLimit, on_rejected=reject_upload_body)
 
 
 @app.post("/upload")
 async def primi_sliku(file: UploadFile = File(...), esp: Optional[str] = None):
-    original_filename = safe_filename(file.filename or "strujomer_nepoznato.jpg")
-    # Ako ESP šalje ?esp=esp_2 u URL-u, koristimo to; inače fallback na detekciju po imenu fajla
-    esp_id = esp if (esp and esp in METER_CONFIG) else detect_esp_id(original_filename)
-
-    if esp_id not in METER_CONFIG:
-        raise HTTPException(status_code=400, detail="Nepoznat ESP ID.")
-
-    cfg = METER_CONFIG[esp_id]
-    sat = cfg["sat"]
-
-    ext = os.path.splitext(original_filename)[1].lower() or ".jpg"
-    latest_name = f"latest_original_{esp_id}{ext}"
-    latest_path = os.path.join(UPLOAD_FOLDER, latest_name)
-
-    content = await file.read()
-
-    # Cuva se samo najnovija slika.
-    # Svaki novi upload prepisuje prethodnu kako disk ne bi rastao 24/7.
-    with open(latest_path, "wb") as f:
-        f.write(content)
-
-    print(f"[{SERVER_VERSION}] [{current_time()}] Primljena slika: {original_filename} -> {esp_id}")
-
-    ocr_result = {"value": None, "raw": "", "engine": "none", "crop_slika": None, "processed_slika": None, "ok": False}
-
+    received_at = time.monotonic()
     try:
-        ocr_result = ocr_reading(latest_path, esp_id)
-        print(f"[OCR] esp={esp_id}, engine={ocr_result['engine']}, value={ocr_result['value']}, raw={ocr_result['raw']}")
-    except Exception as e:
-        ocr_result["raw"] = str(e)
-        print(f"[OCR GREŠKA] {e}")
+        esp_id = identify_device(file.filename, esp)
+    except ValueError:
+        await file.close()
+        raise HTTPException(400, "Fajl ili esp parametar mora označiti esp_1 ili esp_2.")
+    UPLOAD_SEQUENCE[esp_id] += 1
+    sequence = UPLOAD_SEQUENCE[esp_id]
+    sat = METER_CONFIG[esp_id]["sat"]
+    try:
+        content, fingerprint = await read_bounded_upload(file)
+    except (ValueError, OSError):
+        async with UPLOAD_LOCKS[esp_id]:
+            if sequence > LIVE_FRAMES.get(esp_id, {}).get("sequence", 0):
+                invalidate_current(esp_id, sequence, "invalid_image")
+                await asyncio.to_thread(insert_measurement, esp_id, sat, None,
+                                        None, None, None, "invalid_image", False)
+        raise HTTPException(400, "Primljen je nevažeći, nepotpun ili preveliki JPEG.")
 
-    # --------------------------------------------------------
-    # Fail-closed potvrda kroz uzastopne frejmove
-    # --------------------------------------------------------
-
-    candidate_value = ocr_result.get("value")
-    confirmed = False
-    confirmation_count = 0
-
-    if (
-        ocr_result.get("ok", False)
-        and candidate_value is not None
-    ):
-        confirmed, confirmation_count = confirm_ocr_value(
-            esp_id,
-            candidate_value
+    async with UPLOAD_LOCKS[esp_id]:
+        if sequence <= LIVE_FRAMES.get(esp_id, {}).get("sequence", 0):
+            raise HTTPException(409, "Starija slika ne može zameniti noviju.")
+        try:
+            latest = await asyncio.to_thread(replace_latest, UPLOAD_FOLDER, esp_id, content)
+        except (OSError, ValueError):
+            invalidate_current(esp_id, sequence, "image_storage_failed")
+            raise HTTPException(503, "Slika nije mogla bezbedno da se sačuva.")
+        LIVE_FRAMES[esp_id] = {
+            "sequence": sequence, "value": None, "ocr_ok": False,
+            "status": "processing", "original_slika": latest.name,
+            "image": content, "vreme": current_time(),
+            "received_at": received_at, "latency_ms": None,
+        }
+        started = time.monotonic()
+        try:
+            result = await asyncio.to_thread(ocr_reading, content, esp_id)
+        except Exception:
+            logger.exception("OCR processing failed for %s", esp_id)
+            result = {"value": None, "raw": "ocr_error", "engine": "structural_7seg", "ok": False}
+        decision = OCR_CONFIRMATION.observe(
+            esp_id, result.get("value") if result.get("ok") else None,
+            fingerprint, sequence, received_at, time.monotonic(),
         )
-
-        print(
-            f"[CONFIRM] esp={esp_id}, "
-            f"candidate={candidate_value}, "
-            f"count={confirmation_count}/"
-            f"{OCR_CONFIRMATION_REQUIRED}, "
-            f"confirmed={confirmed}"
-        )
-
-    else:
-        # OCR reject prekida niz.
-        OCR_CONFIRMATION_STATE.pop(
-            esp_id,
-            None
-        )
-
-    if not confirmed:
-        if candidate_value is not None:
-            ocr_result["raw"] = (
-                f"{ocr_result.get('raw', '')} || "
-                f"CEKA POTVRDU: "
-                f"{confirmation_count}/"
-                f"{OCR_CONFIRMATION_REQUIRED}"
+        raw = (result.get("raw", "") + " | " + decision.reason)[:8192]
+        try:
+            await asyncio.to_thread(
+                insert_measurement, esp_id, sat, decision.value, latest.name,
+                None, None, raw, decision.confirmed,
             )
+        except sqlite3.Error:
+            invalidate_current(esp_id, sequence, "database_error")
+            logger.exception("Measurement storage failed for %s", esp_id)
+            raise HTTPException(503, "Merenje nije moglo da se sačuva.")
+        LIVE_FRAMES[esp_id].update(
+            value=decision.value, ocr_ok=decision.confirmed, status=decision.reason,
+            ocr_raw=raw, latency_ms=round((time.monotonic()-started)*1000, 1),
+        )
+        return {
+            "status": "uspeh" if decision.confirmed else "primljeno_ali_ocr_nije_siguran",
+            "esp_id": esp_id, "sat": sat, "ocitano": decision.value,
+            "ocr_raw": raw, "engine": result.get("engine", "none"),
+            "slika": latest.name, "crop": None, "processed": None,
+            "confirmation": decision.reason,
+        }
 
-        # Nepotvrdjena vrednost NE SME u bazu
-        # kao validno merenje.
-        ocr_result["value"] = None
-        ocr_result["ok"] = False
 
-    insert_measurement(
-        esp_id=esp_id,
-        sat=sat,
-        value=ocr_result["value"],
-        original_slika=latest_name,
-        crop_slika=ocr_result.get("crop_slika"),
-        processed_slika=ocr_result.get("processed_slika"),
-        ocr_raw=ocr_result.get("raw", ""),
-        ok=ocr_result.get("ok", False)
-    )
-
-    return {
-        "status": "uspeh" if ocr_result["ok"] else "primljeno_ali_ocr_nije_siguran",
-        "esp_id": esp_id,
-        "sat": sat,
-        "ocitano": ocr_result["value"],
-        "ocr_raw": ocr_result["raw"],
-        "engine": ocr_result["engine"],
-        "slika": latest_name,
-        "crop": ocr_result.get("crop_slika"),
-        "processed": ocr_result.get("processed_slika")
-    }
+@app.get("/api/frame/{esp_id}")
+async def original_frame(esp_id: str, sequence: int):
+    if esp_id not in METER_CONFIG:
+        raise HTTPException(404, "Nepoznat ESP ID.")
+    frame = LIVE_FRAMES.get(esp_id, {})
+    if frame.get("image") is None:
+        raise HTTPException(404, "Nema slike iz ove sesije.")
+    if sequence != frame.get("sequence"):
+        raise HTTPException(409, "Stigla je nova slika; osveži prikaz.")
+    return Response(frame["image"], media_type="image/jpeg", headers={"Cache-Control": "no-store"})
 
 
 @app.post("/update")
@@ -1487,60 +1496,33 @@ async def azuriraj_rucno(podatak: PodatakSaSata):
 @app.get("/api/podaci")
 async def api_podaci():
     conn = get_conn()
-
-    # Istorija za grafikon: samo validne OCR vrednosti.
-    rows = conn.execute("""
-        SELECT sat, vrednost, vreme
-        FROM merenja
-        WHERE vrednost IS NOT NULL AND ocr_ok = 1
-        ORDER BY id DESC
-        LIMIT 100
-    """).fetchall()
-
-    # Poslednja slika po ESP-u: SAMO iz ove sesije (posle pokretanja servera).
-    # Bez ovoga bi kartice pokazivale stare vrednosti iz prethodnih sesija pri startu.
-    latest_rows = conn.execute("""
-        SELECT *
-        FROM merenja
-        WHERE id IN (
-            SELECT MAX(id)
-            FROM merenja
-            WHERE esp_id IS NOT NULL AND vreme >= ?
-            GROUP BY esp_id
-        )
-    """, (SERVER_START_VREME,)).fetchall()
-
-    conn.close()
-
+    try:
+        rows = conn.execute("""
+            SELECT sat, vrednost, vreme FROM merenja
+            WHERE vrednost IS NOT NULL AND ocr_ok = 1
+            ORDER BY id DESC LIMIT 100
+        """).fetchall()
+    finally:
+        conn.close()
     istorija = {"sat_1": [], "sat_2": []}
     trenutno = {"sat_1": None, "sat_2": None}
-
-    for r in reversed(rows):
-        if r["sat"] in istorija:
-            istorija[r["sat"]].append({"vreme": r["vreme"], "vrednost": r["vrednost"]})
-
-    slike = {
-        "esp_1": {"original_slika": None, "crop_slika": None, "processed_slika": None, "ocr_raw": None, "ocr_ok": None, "vreme": None},
-        "esp_2": {"original_slika": None, "crop_slika": None, "processed_slika": None, "ocr_raw": None, "ocr_ok": None, "vreme": None}
-    }
-
-    # Trenutna vrednost se prikazuje SAMO ako je poslednja slika za taj ESP uspešno očitana.
-    # Ako OCR padne, kartica prikazuje -- umesto stare vrednosti.
-    for r in latest_rows:
-        esp_id = r["esp_id"]
-        if esp_id in slike:
-            slike[esp_id] = {
-                "original_slika": r["original_slika"],
-                "crop_slika": r["crop_slika"],
-                "processed_slika": r["processed_slika"],
-                "ocr_raw": r["ocr_raw"],
-                "ocr_ok": r["ocr_ok"],
-                "vreme": r["vreme"]
-            }
-
-            if r["ocr_ok"] == 1 and r["vrednost"] is not None:
-                trenutno[r["sat"]] = r["vrednost"]
-
+    for row in reversed(rows):
+        if row["sat"] in istorija:
+            istorija[row["sat"]].append({"vreme": row["vreme"], "vrednost": row["vrednost"]})
+    slike = {}
+    now = time.monotonic()
+    for device, cfg in METER_CONFIG.items():
+        frame = LIVE_FRAMES.get(device, {})
+        fresh = frame.get("received_at") is not None and now-frame["received_at"] <= 15
+        value = frame.get("value") if fresh and frame.get("ocr_ok") else None
+        trenutno[cfg["sat"]] = value
+        slike[device] = {
+            "original_slika": frame.get("original_slika"), "crop_slika": None,
+            "processed_slika": None, "ocr_raw": frame.get("ocr_raw"),
+            "ocr_ok": bool(value is not None), "vreme": frame.get("vreme"),
+            "sequence": frame.get("sequence", 0), "latency_ms": frame.get("latency_ms"),
+            "status": frame.get("status", "waiting") if fresh else "waiting_new_frame",
+        }
     return {"trenutno": trenutno, "istorija": istorija, "slike": slike}
 
 
@@ -1563,6 +1545,17 @@ async def api_merenja(limit: int = 50):
 
 @app.delete("/api/obrisi")
 async def obrisi_bazu():
+    async with AsyncExitStack() as stack:
+        for lock in UPLOAD_LOCKS.values():
+            await stack.enter_async_context(lock)
+        result = await asyncio.to_thread(delete_saved_measurements)
+        LIVE_FRAMES.clear()
+        for device in METER_CONFIG:
+            OCR_CONFIRMATION.invalidate(device)
+        return result
+
+
+def delete_saved_measurements():
     # 1. Obriši sva merenja iz baze
     conn = get_conn()
 
@@ -1635,6 +1628,8 @@ async def status():
     return {
         "version": SERVER_VERSION,
         "server": "radi",
+        "ocr_engine": "structural_7seg",
+        "confirmation_required": 2,
         "ssocr_installed": shutil.which("ssocr") is not None,
         "tesseract_installed": shutil.which("tesseract") is not None,
         "pictures_folder": UPLOAD_FOLDER,

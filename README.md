@@ -4,13 +4,13 @@ ESP32 camera devices upload JPEG photographs to FastAPI `POST /upload`. The dash
 
 ## Status of this development branch
 
-This is an isolated engineering workspace, not a new production deployment. `main.py` and `real_meter_ocr.py` preserve the current Raspberry Pi application as checkpoint commit `24cf496`. The separate `ocr_candidate.py` correctly reads 73/73 readable photographs and rejects all 161 negatives in the fully human-reviewed development/regression dataset. The baseline reads 65/73 correctly and accepts 16 wrong values on the same reviewed labels. Independent validation/test captures remain necessary; these development results do not establish robustness across camera angles or distances. See [research evidence and remaining gates](docs/OCR_RESEARCH.md).
+`main.py` now uses the structurally verified OCR in `ocr_candidate.py`, ordered frame confirmation and bounded atomic JPEG ingestion. It works with the existing SQLite measurement schema and dashboard. The previous application remains recoverable at checkpoint commit `24cf496` and the private deployment backup. On the reviewed development/regression dataset, the new OCR reads 73/73 readable photographs and rejects all 161 negatives; the baseline reads 65/73 correctly and accepts 16 wrong values. Independent validation/test captures remain necessary; these development results do not establish robustness across camera angles or distances. See [research evidence and remaining gates](docs/OCR_RESEARCH.md).
 
-The original project remains in `~/sensor-ocr-system`. Development is in `~/sensor-ocr-dev`. Private datasets live in `~/sensor-ocr-data/robustness-v1`, outside Git. Nothing here should modify production `merenja.db` during research.
+The main application is in `~/sensor-ocr-system`; development is in `~/sensor-ocr-dev`. Private datasets live in `~/sensor-ocr-data/robustness-v1`, outside Git. Integration tests use temporary databases, including a copy of the existing history. Normal server operation stores measurements in the existing `merenja.db`.
 
-52 automated tests cover labeling/capture, OCR structure, ordered frame confirmation, bounded JPEG ingestion, atomic latest-image replacement, the dataset-only HTTP receiver and the live OCR preview. Production main.py still uses its preserved legacy implementation. The temporary receiver and preview can use port 5000 only while the normal app is off; neither writes production measurement history. Stop the running temporary server before starting another application on the same port.
+63 automated tests cover labeling/capture, OCR structure, ordered frame confirmation, bounded JPEG ingestion, atomic latest-image replacement, the HTTP receivers and FastAPI/SQLite integration. Real uvicorn HTTP checks additionally confirm zero/nonzero readings, rejected images, restart behavior and preservation of historical records. The temporary receiver and preview can use port 5000 only while the main app is off. Start one server on this port.
 
-## Simple live OCR test
+## Optional standalone OCR preview
 
 Run one command on the Raspberry Pi:
 
@@ -24,13 +24,13 @@ The preview was checked with 52 passing tests and actual candidate OCR on review
 
 ## Current application and OCR
 
-`main.py` contains FastAPI endpoints, SQLite integration and dashboard HTML/JavaScript. It imports `real_meter_ocr.read_real_meter_image` for `esp_1`; other real devices are unconfigured and reject OCR. The actual esp_1 Festo range is 0.00–9.99, exactly three digits with two fixed decimal places. Other ESP devices must be configured and verified separately.
+`main.py` contains FastAPI endpoints, SQLite integration and dashboard HTML/JavaScript. It calls `ocr_candidate.read_real_meter_image` for `esp_1`; other real devices are unconfigured and reject OCR. The actual esp_1 Festo range is 0.00–9.99, exactly three digits with two fixed decimal places. Other ESP devices must be configured and verified separately. The main server rejects the unsafe geometry-only experimental mode at startup.
 
-This is a rule-based pipeline: blue-color segmentation → morphology → geometric contour filtering → normalized screen warp → three fixed digit slots → binary masks → seven-segment occupancy decoding → confidence gate. It is not a trained ML model. Geometric display presence and digit correctness are separate requirements. A high decoder score alone does not establish display presence.
+This is a rule-based pipeline: blue-color segmentation → quadrilateral candidates → normalized perspective warp → verified blue background and dynamic digit-row localization → local binary masks and bounded slant correction → structural seven-segment decoding → ambiguity/confidence gates. It is not a trained ML model. Geometric display presence and digit correctness are separate requirements. A high decoder score alone does not establish display presence.
 
-ESP uploads normally occur about every five seconds. A filename containing `esp_1` or `esp_2` selects the legacy camera ID; an optional `?esp=esp_1` query also exists. Legacy unknown-ID fallback is a known weakness. The existing two-consecutive-frame confirmation is per-device and resets on rejection, but has no duplicate, age or sequence verification. Do not run multiple server workers; confirmation state is process-local.
+ESP uploads normally occur about every five seconds. A bounded `esp_1`/`esp_2` filename identifier or explicit verified `?esp=esp_1` query selects the device. Unknown IDs are rejected. Two distinct, ordered, consistently decoded frames confirm a measurement; rejected, changed, duplicated, late or too-close frames reset confirmation. State is separate per camera and starts empty after restart. Do not run multiple workers; confirmation state is process-local. Receive time and JPEG hashes do not authenticate camera capture freshness.
 
-## Run the existing production server
+## Run the main server
 
 Use the established environment; these tools do not install packages or alter the OS:
 
@@ -40,7 +40,7 @@ source env/bin/activate
 python3 -m uvicorn main:app --host 0.0.0.0 --port 5000 --reload
 ```
 
-`--reload` is the user's existing development workflow. Continuous-operation deployment should eventually use a reviewed service and one worker, after explicit approval. No boot service or OS settings have been changed. Importing `main.py` initializes its database, so do not import it casually in algorithm experiments.
+Open `http://RPI_IP:5000/`, where `RPI_IP` is returned by `hostname -I`. The main dashboard now shows original photographs, confirmed values and valid measurement history using the new OCR. No separate preview command is needed. `--reload` is the existing development workflow. Continuous-operation deployment should eventually use a reviewed service and one worker. No boot service or OS settings have been changed. Importing `main.py` initializes its database; tests must set `SENSOR_OCR_DATA_DIR` to a temporary directory before importing or starting the app.
 
 The existing `requirements.txt` describes web dependencies but is incomplete for computer vision. The inspected environment already provides OpenCV 4.12.0, NumPy 2.2.6, pytesseract and Pillow, including system packages. A fresh installation must provide those dependencies as well; a Raspberry Pi native OpenCV/NumPy installation is different from a pip wheel. Dependency lock/rebuild verification remains pending. No paid APIs or new ML runtime are required by the tools.
 
@@ -93,10 +93,10 @@ Reports include exact full-reading matches, false acceptance rates for absent an
 
 ## Storage, troubleshooting and recovery
 
-The current application overwrites each device's latest original image; historical timestamped files are not automatically purged. Latest writes are currently non-atomic. The separate collector watches changed stable JPEG files and may miss a frame overwritten between polls. It does not promise to capture every upload. It has explicit start/stop, count and disk limits, and exact-hash deduplication. It never deletes existing dataset images or production history to free space.
+The current application atomically overwrites each device's latest original JPEG; historical timestamped files are not automatically purged. Multipart ingress is limited before parsing, JPEG bytes/dimensions are verified, free disk space is checked, and processing is serialized per device. Failed writes preserve the previous original and clear the current value. The dashboard fetches a frame matched to its metadata; failures show `-`, and a value expires after 15 seconds without a new image. Charts use only valid DB records. The separate collector watches changed stable JPEG files and may miss a frame overwritten between polls. It has explicit start/stop, count and disk limits, and exact-hash deduplication. It never deletes existing datasets or production history to free space. Measurement DB growth still requires a separately agreed retention policy.
 
 If capture remains at zero: confirm that the production server is running, ESP uploads are arriving, the configured source file changes, and the disk quota is available. The initial old latest image is intentionally ignored. If a source is being rewritten or a JPEG is incomplete, the tool retries rather than inventing a frame. If the laptop URL fails, check that the SSH tunnel is running and port 8801 is free. An interrupted labeling service preserves committed labels; restart the service and refresh the page. A stale label revision is rejected to prevent a second browser tab from silently overwriting a newer annotation.
 
 The recovery checkpoint is in `~/sensor-ocr-recovery/20261009T121834Z`: source/dataset archive, Git bundle, original hashes and uncommitted main patch. The archive excludes the production DB and runtime images; those remain untouched in the original project. Git history remains intact. The first development commit preserves current main/OCR. A rollback of later development code can use a new worktree at `24cf496`; never reset the active dirty production worktree or rewrite shared history. Deployment/rollback of a running service requires a reviewed plan and explicit approval.
 
-This development release preserves Git history and keeps useful historical scripts and experiments. No files were permanently removed, so destructive cleanup approval is not required for publishing this branch. Photographs, ground-truth databases, logs, environments and credentials are excluded from new commits. The release checks are recorded in [the release report](docs/RELEASE_CHECKS.md). Main-branch integration and replacement of the production application remain pending independent-data validation and deployment review.
+This release preserves Git history and keeps useful historical scripts and experiments. No files were permanently removed. Photographs, ground-truth databases, logs, environments and credentials are excluded from new commits. Checks are recorded in [the release report](docs/RELEASE_CHECKS.md) and [the main-server integration report](docs/MAIN_SERVER.md). Installation in the existing Raspberry Pi application folder is separate from merging the GitHub branch: no merge into Git main is performed. Independent accuracy validation remains pending.
