@@ -1069,130 +1069,66 @@ def run_tesseract(image_path: str, cfg: Dict) -> Tuple[Optional[float], str]:
 
 def ocr_reading(image_path: str, esp_id: str) -> Dict:
     """
-    Pipeline v3:
-      1) blue LCD detection
-      2) perspective correction
-      3) direct OpenCV 7-segment decoder
-      4) tight numeric crop + threshold variants
-      5) SSOCR fallback
-      6) Tesseract poslednji fallback
+    Produkcioni OCR za realni Festo merac.
+
+    esp_1:
+      - detekcija plavog LCD-a
+      - perspective correction
+      - 3 fiksna digit slota
+      - calibrated 7-segment decoder
+      - confidence rejection
+
+    Stari SSOCR/Tesseract pipeline se ne koristi.
     """
-    cfg = METER_CONFIG[esp_id]
-    paths = crop_and_preprocess(image_path, esp_id)
 
-    detection_debug = paths.get("detection_debug", {})
-    debug_prefix = f"DETECTION={detection_debug}"
-
-    sharpness, contrast = image_quality_metrics(paths["crop"])
-
-    # Sharpness više NE odbacuje sliku odmah.
-# Koristimo ga samo kao dijagnostiku.
-# OCR/dekoder treba svakako da pokuša prepoznavanje.
-
-    if contrast < cfg.get("min_contrast", 6.0):
-        return {
-        "value": None,
-        "raw": (
-            f"{debug_prefix} || ODBIJENO: premali kontrast "
-            f"sharpness={sharpness:.1f}, contrast={contrast:.1f}"
-        ),
-        "engine": "none",
-        "crop_slika": os.path.basename(paths["crop"]),
-        "processed_slika": os.path.basename(paths["processed_dashboard"]),
-        "ok": False
-    }
-
-    all_raw = [
-        debug_prefix,
-        f"QUALITY sharpness={sharpness:.1f}, contrast={contrast:.1f}"
-    ]
-
-    # --------------------------------------------------------
-    # 0. DIRECT 7-SEGMENT - primarni engine
-    # --------------------------------------------------------
-    direct_value, direct_raw = run_direct_7segment(paths["screen"], cfg)
-    all_raw.append(f"direct7seg: {direct_raw}")
-
-    if direct_value is not None:
-        return {
-            "value": round(float(direct_value), cfg.get("decimal_digits", 2)),
-            "raw": " || ".join(all_raw),
-            "engine": "direct7seg",
-            "crop_slika": os.path.basename(paths["crop"]),
-            "processed_slika": os.path.basename(paths["processed_dashboard"]),
-            "ok": True
-        }
-
-    # --------------------------------------------------------
-    # 1. SSOCR - fallback ensemble
-    # --------------------------------------------------------
-    candidates = []
-
-    for idx, path in enumerate(paths.get("ssocr_variants", [])):
-        value, raw = run_ssocr(path, cfg)
-        all_raw.append(f"ssocr_variant_{idx}: {raw}")
-
-        if value is not None:
-            candidates.append((
-                round(float(value), cfg.get("decimal_digits", 2)),
-                f"ssocr_variant_{idx}"
-            ))
-
-    # --------------------------------------------------------
-    # 2. Tesseract - poslednji fallback
-    # --------------------------------------------------------
-    tess_value, tess_raw = run_tesseract(paths["processed"], cfg)
-    all_raw.append(f"tesseract_processed: {tess_raw}")
-
-    if tess_value is not None:
-        candidates.append((
-            round(float(tess_value), cfg.get("decimal_digits", 2)),
-            "tesseract_processed"
-        ))
-
-    if not candidates:
+    if esp_id != "esp_1":
         return {
             "value": None,
-            "raw": " || ".join(all_raw),
+            "raw": f"ODBIJENO: novi real-meter OCR nije konfigurisan za {esp_id}",
             "engine": "none",
-            "crop_slika": os.path.basename(paths["crop"]),
-            "processed_slika": os.path.basename(paths["processed_dashboard"]),
+            "crop_slika": None,
+            "processed_slika": None,
             "ok": False
         }
 
-    values = [v for v, _ in candidates]
-    counts = Counter(values)
-    best_value, votes = counts.most_common(1)[0]
-    engines_for_best = [engine for value, engine in candidates if value == best_value]
+    from real_meter_ocr import read_real_meter_image
 
-    has_ssocr_vote = any(engine.startswith("ssocr_") for engine in engines_for_best)
-    accepted = votes >= 2 or has_ssocr_vote
+    image = cv2.imread(image_path)
 
-    if not accepted:
+    if image is None:
         return {
             "value": None,
-            "raw": (
-                f"NEMA DOVOLJNO SIGURNOSTI candidates={candidates} || "
-                + " || ".join(all_raw)
-            ),
+            "raw": "ODBIJENO: originalna slika nije mogla da se ucita.",
             "engine": "none",
-            "crop_slika": os.path.basename(paths["crop"]),
-            "processed_slika": os.path.basename(paths["processed_dashboard"]),
+            "crop_slika": None,
+            "processed_slika": None,
+            "ok": False
+        }
+
+    value, debug = read_real_meter_image(
+        image,
+        confidence_threshold=0.45
+    )
+
+    if value is None:
+        return {
+            "value": None,
+            "raw": str(debug),
+            "engine": "real_meter_7seg",
+            "crop_slika": None,
+            "processed_slika": None,
             "ok": False
         }
 
     return {
-        "value": best_value,
-        "raw": (
-            f"CONSENSUS value={best_value}, votes={votes}, "
-            f"candidates={candidates} || "
-            + " || ".join(all_raw)
-        ),
-        "engine": "+".join(engines_for_best),
-        "crop_slika": os.path.basename(paths["crop"]),
-        "processed_slika": os.path.basename(paths["processed_dashboard"]),
+        "value": round(float(value), 2),
+        "raw": str(debug),
+        "engine": "real_meter_7seg",
+        "crop_slika": None,
+        "processed_slika": None,
         "ok": True
     }
+
 
 def insert_measurement(esp_id: str, sat: str, value: Optional[float],
                        original_slika: Optional[str], crop_slika: Optional[str],
@@ -1399,6 +1335,42 @@ async def dashboard():
     return HTML_STRANICA
 
 
+# ============================================================
+# OCR FRAME CONFIRMATION
+# ============================================================
+
+OCR_CONFIRMATION_REQUIRED = 2
+OCR_CONFIRMATION_STATE = {}
+
+
+def confirm_ocr_value(esp_id: str, value):
+    """
+    Vrednost je validna tek kada je ista vrednost procitana
+    u vise uzastopnih frejmova.
+
+    Svaki OCR reject prekida niz.
+    """
+
+    value = round(float(value), 2)
+
+    previous = OCR_CONFIRMATION_STATE.get(esp_id)
+
+    if (
+        previous is not None
+        and abs(previous["value"] - value) < 0.001
+    ):
+        count = previous["count"] + 1
+    else:
+        count = 1
+
+    OCR_CONFIRMATION_STATE[esp_id] = {
+        "value": value,
+        "count": count
+    }
+
+    return count >= OCR_CONFIRMATION_REQUIRED, count
+
+
 @app.post("/upload")
 async def primi_sliku(file: UploadFile = File(...), esp: Optional[str] = None):
     original_filename = safe_filename(file.filename or "strujomer_nepoznato.jpg")
@@ -1412,15 +1384,13 @@ async def primi_sliku(file: UploadFile = File(...), esp: Optional[str] = None):
     sat = cfg["sat"]
 
     ext = os.path.splitext(original_filename)[1].lower() or ".jpg"
-    ts_name = f"{timestamp()}_{esp_id}{ext}"
     latest_name = f"latest_original_{esp_id}{ext}"
-
-    ts_path = os.path.join(UPLOAD_FOLDER, ts_name)
     latest_path = os.path.join(UPLOAD_FOLDER, latest_name)
 
     content = await file.read()
-    with open(ts_path, "wb") as f:
-        f.write(content)
+
+    # Cuva se samo najnovija slika.
+    # Svaki novi upload prepisuje prethodnu kako disk ne bi rastao 24/7.
     with open(latest_path, "wb") as f:
         f.write(content)
 
@@ -1434,6 +1404,52 @@ async def primi_sliku(file: UploadFile = File(...), esp: Optional[str] = None):
     except Exception as e:
         ocr_result["raw"] = str(e)
         print(f"[OCR GREŠKA] {e}")
+
+    # --------------------------------------------------------
+    # Fail-closed potvrda kroz uzastopne frejmove
+    # --------------------------------------------------------
+
+    candidate_value = ocr_result.get("value")
+    confirmed = False
+    confirmation_count = 0
+
+    if (
+        ocr_result.get("ok", False)
+        and candidate_value is not None
+    ):
+        confirmed, confirmation_count = confirm_ocr_value(
+            esp_id,
+            candidate_value
+        )
+
+        print(
+            f"[CONFIRM] esp={esp_id}, "
+            f"candidate={candidate_value}, "
+            f"count={confirmation_count}/"
+            f"{OCR_CONFIRMATION_REQUIRED}, "
+            f"confirmed={confirmed}"
+        )
+
+    else:
+        # OCR reject prekida niz.
+        OCR_CONFIRMATION_STATE.pop(
+            esp_id,
+            None
+        )
+
+    if not confirmed:
+        if candidate_value is not None:
+            ocr_result["raw"] = (
+                f"{ocr_result.get('raw', '')} || "
+                f"CEKA POTVRDU: "
+                f"{confirmation_count}/"
+                f"{OCR_CONFIRMATION_REQUIRED}"
+            )
+
+        # Nepotvrdjena vrednost NE SME u bazu
+        # kao validno merenje.
+        ocr_result["value"] = None
+        ocr_result["ok"] = False
 
     insert_measurement(
         esp_id=esp_id,
@@ -1504,8 +1520,8 @@ async def api_podaci():
             istorija[r["sat"]].append({"vreme": r["vreme"], "vrednost": r["vrednost"]})
 
     slike = {
-        "esp_1": {"crop_slika": None, "processed_slika": None, "ocr_raw": None, "ocr_ok": None, "vreme": None},
-        "esp_2": {"crop_slika": None, "processed_slika": None, "ocr_raw": None, "ocr_ok": None, "vreme": None}
+        "esp_1": {"original_slika": None, "crop_slika": None, "processed_slika": None, "ocr_raw": None, "ocr_ok": None, "vreme": None},
+        "esp_2": {"original_slika": None, "crop_slika": None, "processed_slika": None, "ocr_raw": None, "ocr_ok": None, "vreme": None}
     }
 
     # Trenutna vrednost se prikazuje SAMO ako je poslednja slika za taj ESP uspešno očitana.
@@ -1514,6 +1530,7 @@ async def api_podaci():
         esp_id = r["esp_id"]
         if esp_id in slike:
             slike[esp_id] = {
+                "original_slika": r["original_slika"],
                 "crop_slika": r["crop_slika"],
                 "processed_slika": r["processed_slika"],
                 "ocr_raw": r["ocr_raw"],
