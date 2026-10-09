@@ -128,9 +128,12 @@ def main():
         prediction=f'{value:.2f}' if value is not None else None
         result.append(dict(row,prediction=prediction,latency_seconds=elapsed,debug=debug))
     timings=[r['latency_seconds'] for r in result]
+    if not timings:
+        parser.error('No reviewed images in selected split')
     after=resource.getrusage(resource.RUSAGE_SELF)
     report={'schema_version':1,'dataset_version':version,'ocr_sha256':hashlib.sha256(Path(args.ocr).read_bytes()).hexdigest(),
         'confidence':args.confidence,'split':'legacy' if args.legacy else args.split,
+        'configuration':module.evaluation_configuration() if hasattr(module,'evaluation_configuration') else {},
         'level':'frame','designated_holdout_partition':bool(args.final_test and not args.legacy),
         'unreviewed_or_skipped':len(pending),'metrics':summarize(result),
         'latency_seconds':{'mean':statistics.mean(timings),'p95':sorted(timings)[int(.95*(len(timings)-1))],'max':max(timings)},
@@ -143,8 +146,9 @@ def main():
     for field in ['angle','distance','lighting','group_id']:
         report['by_condition'][field]={key:summarize([r for r in result if r[field]==key]) for key in sorted(set(r[field] for r in result))}
     output=Path(args.output);output.parent.mkdir(parents=True,exist_ok=True)
+    serialized=json.dumps(report,indent=2)
     with output.open('x',encoding='utf-8') as file:
-        json.dump(report,file,indent=2)
+        file.write(serialized)
     print(json.dumps({k:v for k,v in report.items() if k not in ['rows','by_condition']},indent=2))
 
 
